@@ -73,6 +73,19 @@ If you have the DMG URL, you can pass it directly:
 ./install.sh https://example.com/Codex*.dmg
 ```
 
+### Option C: Use the current Beta app bundle zip
+
+The current Beta desktop build is available here:
+
+[Codex (Beta) darwin-arm64 26.311.30926](https://persistent.oaistatic.com/codex-app-beta/Codex%20(Beta)-darwin-arm64-26.311.30926.zip)
+
+Because this download is a `.zip` containing `Codex (Beta).app`, unzip it first, then point `install.sh` at the extracted app bundle:
+
+```bash
+unzip 'Codex (Beta)-darwin-arm64-26.311.30926.zip'
+./install.sh './Codex (Beta).app'
+```
+
 ## Usage
 
 The installer creates:
