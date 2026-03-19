@@ -90,6 +90,32 @@ unzip 'Codex (Beta)-darwin-arm64-26.317.21539.zip'
 ./install.sh './Codex (Beta).app'
 ```
 
+## Codex Automation
+
+If you use Codex Automations, you can save the beta refresh workflow as a scheduled task for this repo.
+
+Suggested setup:
+
+- workspace: `codex-intel`
+- schedule: weekdays at `9:00 AM`
+- model: `GPT-5.4`
+- title: `Update Codex Intel Binary`
+
+Suggested prompt:
+
+```text
+Help me take a look if there's a new beta release for the codex, download, and convert them so we can update our build.
+```
+
+This works well as a recurring repo maintenance task:
+
+- checks whether a newer Codex Beta build exists
+- downloads the current Beta app bundle zip
+- runs the local conversion flow in this repo
+- lets you review the resulting build/logs before committing any repo changes
+
+For manual installs, `install.sh` remains the source of truth.
+
 ## Usage
 
 The installer creates:
