@@ -7,6 +7,8 @@
 Run OpenAI Codex Desktop on Intel macOS by converting the official macOS app bundle or DMG into an x86_64 Electron app bundle. Stable and Beta builds are both supported.
 
 > This is an unofficial community project. Codex Desktop is a product of OpenAI.
+>
+> Fork note: this fork is maintained by `cowskin`. The original project and core implementation were created by [Sancerio](https://github.com/Sancerio), and this fork preserves that attribution.
 
 Learn more about Codex: https://openai.com/codex/
 
@@ -232,6 +234,7 @@ Optional custom app path:
 - The packaged `node-pty` helper binary does not match the app architecture. On the affected Intel Mac, `pty.node` was `x86_64` but `spawn-helper` was still `arm64`, so terminal startup failed even when the shell path was `/bin/zsh`.
 - This repo now patches the packaged app to fall back to `/bin/zsh`, `/bin/bash`, and then `/bin/sh` when the recorded shell path is invalid.
 - The installer also now copies the matching `node-pty` `spawn-helper` into the final app bundle so Electron 32 x64 builds do not retain a stale arm64 helper.
+- For local macOS terminals, the bundled app now starts `zsh` with `-f` and `bash` with `--noprofile --norc` so embedded-terminal startup does not block on user shell bootstrap scripts such as proxy activators.
 - Re-run `./install.sh ...` to rebuild with both terminal fixes.
 - There is currently no macOS integrated-terminal shell picker in Codex settings, so this is not something you can reliably fix from the app UI alone.
 - A user-level fix is to set your login shell back to a valid system shell:
