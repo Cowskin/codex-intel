@@ -168,7 +168,7 @@ For those machines, use:
 
 If you already have a working patched bundle under `./codex-app/`, copy that same `.app` into `/Applications` so Finder launches the identical build.
 
-Detailed case notes: [docs/legacy-intel-electron-32-fallback.md](/Users/cowkin/Code/DailyOps/codex-intel/docs/legacy-intel-electron-32-fallback.md)
+Detailed case notes: [docs/legacy-intel-electron-32-fallback.md](docs/legacy-intel-electron-32-fallback.md)
 
 ## Performance (Intel Fan Noise / Idle Heat)
 
