@@ -8,7 +8,7 @@ Run OpenAI Codex Desktop on Intel macOS by converting the official macOS app bun
 
 > This is an unofficial community project. Codex Desktop is a product of OpenAI.
 >
-> Fork note: this fork is maintained by `cowskin`. The original project and core implementation were created by [Sancerio](https://github.com/Sancerio), and this fork preserves that attribution.
+> Fork note: this fork is maintained by `Cowskin` for Intel macOS compatibility updates and local fixes. The original project and core implementation were created by [Sancerio](https://github.com/Sancerio), and this fork preserves that attribution.
 
 Learn more about Codex: https://openai.com/codex/
 
