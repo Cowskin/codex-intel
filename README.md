@@ -227,10 +227,12 @@ Optional custom app path:
 ```
 
 **Integrated terminal fails with `posix_spawnp failed`**
-- On macOS, Codex Desktop opens the integrated terminal by spawning your login shell from the account record or `SHELL`.
-- If that shell points to a removed or non-executable path, terminal startup can fail before any prompt appears.
+- On macOS, this can happen for two different reasons:
+- The login shell path from the account record or `SHELL` is invalid.
+- The packaged `node-pty` helper binary does not match the app architecture. On the affected Intel Mac, `pty.node` was `x86_64` but `spawn-helper` was still `arm64`, so terminal startup failed even when the shell path was `/bin/zsh`.
 - This repo now patches the packaged app to fall back to `/bin/zsh`, `/bin/bash`, and then `/bin/sh` when the recorded shell path is invalid.
-- Re-run `./install.sh ...` to rebuild with the fallback patch.
+- The installer also now copies the matching `node-pty` `spawn-helper` into the final app bundle so Electron 32 x64 builds do not retain a stale arm64 helper.
+- Re-run `./install.sh ...` to rebuild with both terminal fixes.
 - There is currently no macOS integrated-terminal shell picker in Codex settings, so this is not something you can reliably fix from the app UI alone.
 - A user-level fix is to set your login shell back to a valid system shell:
 
@@ -242,6 +244,12 @@ chsh -s /bin/zsh
 
 ```bash
 dscl . -read /Users/"$USER" UserShell
+```
+
+- You can inspect the packaged helper architecture with:
+
+```bash
+file /Applications/Codex.app/Contents/Resources/app.asar.unpacked/node_modules/node-pty/build/Release/spawn-helper
 ```
 
 **Native module load error**

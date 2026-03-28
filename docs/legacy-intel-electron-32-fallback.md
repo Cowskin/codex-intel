@@ -17,12 +17,13 @@ On the affected machine, newer rebuild attempts could fail in more than one way:
 - blank or black window during startup
 - startup path trying to use a dev-server URL such as `http://localhost:5175`
 - `/Applications/Codex.app` still failing even though `./codex-app/Codex.app` worked
+- integrated terminal opening with `posix_spawnp failed.`
 
 In one reproduced case, the repo-local app launched correctly while the installed `/Applications/Codex.app` was still an older broken bundle.
 
 ## Root Cause In This Case
 
-There were two separate problems:
+There were three separate problems:
 
 1. The wrong app bundle was being launched from Finder.
    The working patched bundle lived under `./codex-app/`, but `/Applications/Codex.app` still contained the older `app.asar`.
@@ -31,6 +32,11 @@ There were two separate problems:
    The bundle could still enter the dev-server code path when `app.isPackaged` was not behaving the way the original app expected after repackaging.
 
 The working fix was to force the dev-server branch to run only when `process.env.ELECTRON_RENDERER_URL` is actually set.
+
+3. The packaged `node-pty` terminal helper was mixed-architecture.
+   In the failing installed app, `build/Release/pty.node` was `x86_64`, but `build/Release/spawn-helper` was still `arm64`. That caused the integrated terminal to fail at spawn time on the Intel Mac even when the shell path itself was valid.
+
+The working fix was to copy the matching rebuilt or prebuilt x64 `spawn-helper` into `node-pty/build/Release/`.
 
 ## Why Not Just Rebuild On That Mac
 
@@ -75,6 +81,7 @@ The repo now includes:
 
 - explicit Electron version override support via `--electron-version`
 - ABI-aware `node-pty` target directory handling
+- matching `node-pty` `spawn-helper` replacement for Intel Electron fallback bundles
 - stronger main-bundle patching for the dev-server branch
 - a direct-launch smoke test script for local verification
 

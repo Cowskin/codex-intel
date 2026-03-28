@@ -471,6 +471,11 @@ replace_once(
     "renderer URL helper guard",
 )
 replace_once(
+    r"var ns=\[`powershell`,`commandPrompt`\],rs=\[`--login`,`-i`\];function is\(\)\{if\(process\.platform!==`win32`\)return\[\];let e=\[\.\.\.ns\];return ls\(\)!=null&&e\.push\(`gitBash`\),us\(\)!=null&&e\.push\(`wsl`\),e\}function as\(t\)\{if\(process\.platform!==`win32`\)return\[e\.Pt\(\)\];",
+    "var ns=[`powershell`,`commandPrompt`],rs=[`--login`,`-i`];function is(){if(process.platform!==`win32`)return[];let e=[...ns];return ls()!=null&&e.push(`gitBash`),us()!=null&&e.push(`wsl`),e}function __codexValidShellPath(e){try{return typeof e==`string`&&e.length>0&&(0,a.existsSync)(e)&&((0,a.statSync)(e).mode&73)!==0}catch{return!1}}function as(t){if(process.platform!==`win32`){for(let t of[e.Pt(),process.env.SHELL?.trim(),`/bin/zsh`,`/bin/bash`,`/bin/sh`])if(__codexValidShellPath(t))return[t];return[`/bin/sh`]}",
+    "local terminal shell fallback",
+)
+replace_once(
     r"!([A-Za-z_$][\w$]*)\.app\.isPackaged\)\{let ([A-Za-z_$][\w$]*)=new URL\(Kh\(\)\);",
     r"!\\1.app.isPackaged&&process.env.ELECTRON_RENDERER_URL){let \\2=new URL(Kh());",
     "dev-server branch guard",
@@ -642,6 +647,19 @@ cp "$REBUILD/node_modules/node-pty/build/Release/pty.node" \
 
 cp "$REBUILD/node_modules/node-pty/build/Release/pty.node" \
    "$NODE_PTY_TARGET_DIR/node-pty.node"
+
+NODE_PTY_HELPER_SOURCE=""
+if [[ -f "$REBUILD/node_modules/node-pty/build/Release/spawn-helper" ]]; then
+  NODE_PTY_HELPER_SOURCE="$REBUILD/node_modules/node-pty/build/Release/spawn-helper"
+elif [[ -f "$REBUILD/node_modules/node-pty/prebuilds/darwin-x64/spawn-helper" ]]; then
+  NODE_PTY_HELPER_SOURCE="$REBUILD/node_modules/node-pty/prebuilds/darwin-x64/spawn-helper"
+fi
+
+if [[ -n "$NODE_PTY_HELPER_SOURCE" ]]; then
+  cp "$NODE_PTY_HELPER_SOURCE" \
+     "$ASAR_EXTRACT/node_modules/node-pty/build/Release/spawn-helper"
+  chmod 755 "$ASAR_EXTRACT/node_modules/node-pty/build/Release/spawn-helper"
+fi
 
 # Disable sparkle (skipping)
 # [[ -f "$ASAR_EXTRACT/native/sparkle.node" ]] && true > "$ASAR_EXTRACT/native/sparkle.node" || true
