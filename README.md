@@ -18,7 +18,7 @@ The installer:
 2. Pulls out `app.asar` (the Electron app)
 3. Rebuilds native modules (`node-pty`, `better-sqlite3`) for Electron x64
 4. Disables macOS‑only Sparkle auto‑update
-5. Downloads Electron v40 for darwin‑x64
+5. Downloads Electron for darwin‑x64 (default: the packaged app's Electron version, with optional fallback override)
 6. Repackages everything into a runnable app bundle with the same name as the original DMG app, such as `Codex.app` or `Codex (Beta).app`
 7. Applies a small patch so it doesn’t try to connect to a Vite dev server
 
@@ -63,6 +63,12 @@ Verbose native rebuild output:
 
 ```bash
 ./install.sh -v /path/to/Codex.dmg
+```
+
+Force an older Electron runtime explicitly:
+
+```bash
+./install.sh --electron-version 32.3.3 /path/to/Codex.app
 ```
 
 ### Option B: Auto‑download DMG
@@ -142,6 +148,26 @@ Or use the helper script:
 ./start.sh
 ```
 
+## Legacy Intel Mac Fallback
+
+Some older Intel Macs can launch a rebuilt Codex app on Electron `32.3.3` but fail on newer Electron releases such as `40.x`.
+
+Typical symptoms:
+
+- blank or black window on launch
+- startup trying to hit `http://localhost:5175`
+- app opens from a repo-local bundle but not from `/Applications`
+
+For those machines, use:
+
+```bash
+./install.sh --electron-version 32.3.3 /path/to/Codex.app
+```
+
+If you already have a working patched bundle under `./codex-app/`, copy that same `.app` into `/Applications` so Finder launches the identical build.
+
+Detailed case notes: [docs/legacy-intel-electron-32-fallback.md](/Users/cowkin/Code/DailyOps/codex-intel/docs/legacy-intel-electron-32-fallback.md)
+
 ## Performance (Intel Fan Noise / Idle Heat)
 
 This repo now applies a low-power window patch during `install.sh`:
@@ -179,7 +205,7 @@ Optional custom app path:
 
 - Auto‑update is disabled (Sparkle is macOS‑only and removed).
 - The app may show warnings about `url.parse` deprecation — safe to ignore.
-- The app expects the Codex CLI on your PATH. If you installed it globally, that’s already done.
+- The app expects the Codex CLI to be available. `install.sh` also tries to copy an x86_64 `codex` binary into the app bundle, so Finder launches do not depend only on your interactive shell PATH.
 - During native rebuild, upstream modules can emit compiler warnings; this is expected as long as rebuild finishes with `Rebuild OK`.
 - Native rebuild output is saved under `work/logs/` by default (for example `work/logs/rebuild-better-sqlite3.log`).
 - To stream full native rebuild output live, run with `./install.sh -v ...` (or set `NATIVE_REBUILD_VERBOSE=1`).
@@ -188,7 +214,35 @@ Optional custom app path:
 
 **App opens a blank window**
 - Make sure the patch applied (installer output should say “patched main.js”).
+- On some older Intel Macs, rebuild again with `--electron-version 32.3.3`.
 - If patching fails with a pattern error, use the Codex CLI fallback shown by `install.sh` to update patch logic in `install.sh`, then rerun the installer.
+
+**`/Applications/Codex.app` still fails after a repo-local build works**
+- You are probably launching two different app bundles.
+- Compare `./codex-app/Codex.app` and `/Applications/Codex.app`; if they differ, replace the `/Applications` copy with the verified working bundle.
+- Re-run the smoke test directly against the installed bundle:
+
+```bash
+./smoke-test.sh /Applications/Codex.app
+```
+
+**Integrated terminal fails with `posix_spawnp failed`**
+- On macOS, Codex Desktop opens the integrated terminal by spawning your login shell from the account record or `SHELL`.
+- If that shell points to a removed or non-executable path, terminal startup can fail before any prompt appears.
+- This repo now patches the packaged app to fall back to `/bin/zsh`, `/bin/bash`, and then `/bin/sh` when the recorded shell path is invalid.
+- Re-run `./install.sh ...` to rebuild with the fallback patch.
+- There is currently no macOS integrated-terminal shell picker in Codex settings, so this is not something you can reliably fix from the app UI alone.
+- A user-level fix is to set your login shell back to a valid system shell:
+
+```bash
+chsh -s /bin/zsh
+```
+
+- You can verify the current login shell with:
+
+```bash
+dscl . -read /Users/"$USER" UserShell
+```
 
 **Native module load error**
 - Delete `codex-app/` and rerun `install.sh`.
@@ -197,6 +251,15 @@ Optional custom app path:
 - Warnings from `better-sqlite3` and `node-pty` can be normal with newer toolchains.
 - Treat the run as successful if installer output shows `Rebuild OK: better-sqlite3` and `Rebuild OK: node-pty`.
 - If rebuild fails, inspect `work/logs/rebuild-*.log`.
+
+**Native rebuild fails on an old Intel Mac with missing C++20 headers**
+- Electron native rebuilds for some fallback versions require newer Apple SDK headers than old Command Line Tools provide.
+- A common failure looks like missing `<source_location>` during `node-gyp rebuild`.
+- On machines that cannot be updated further, a previously rebuilt Electron `32.3.3` bundle may still run even if a fresh local rebuild is no longer possible.
+- In that case:
+  - keep the installer changes in this repo
+  - preserve a known-good patched `.app`
+  - test the exact installed bundle with `./smoke-test.sh /Applications/Codex.app`
 
 **Gatekeeper warning**
 - Right‑click the app → Open (once) to allow it.

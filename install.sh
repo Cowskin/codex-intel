@@ -5,9 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$ROOT/work"
 OUT="$ROOT/codex-app"
 SYSTEM_APPS_DIR="/Applications"
-ELECTRON_VERSION="40.0.0"
-ELECTRON_ZIP="electron-v${ELECTRON_VERSION}-darwin-x64.zip"
-ELECTRON_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/${ELECTRON_ZIP}"
+DEFAULT_ELECTRON_VERSION="40.0.0"
+ELECTRON_VERSION="$DEFAULT_ELECTRON_VERSION"
+ELECTRON_VERSION_OVERRIDE="${ELECTRON_VERSION_OVERRIDE:-}"
+ELECTRON_ABI=""
+ELECTRON_ZIP=""
+ELECTRON_URL=""
 WORK_APP_PATH=""
 OUT_APP_PATH=""
 SYSTEM_APP_PATH=""
@@ -37,14 +40,17 @@ normalize_source_input_path() {
 
 usage() {
   cat <<EOF
-Usage: $0 [-h|--help] [-v|--verbose] /path/to/Codex*.app
-       $0 [-h|--help] [-v|--verbose] /path/to/Codex*.dmg
-       $0 [-h|--help] [-v|--verbose] https://.../Codex*.dmg
+Usage: $0 [-h|--help] [-v|--verbose] [--electron-version X.Y.Z] /path/to/Codex*.app
+       $0 [-h|--help] [-v|--verbose] [--electron-version X.Y.Z] /path/to/Codex*.dmg
+       $0 [-h|--help] [-v|--verbose] [--electron-version X.Y.Z] https://.../Codex*.dmg
 
 Options:
   -h, --help      Show this help message and exit.
   -v, --verbose   Enable verbose native rebuild output.
                   (Alternatively, set NATIVE_REBUILD_VERBOSE=1.)
+  --electron-version X.Y.Z
+                  Override the Electron runtime used for rebuilding.
+                  Default: use the version declared in the packaged app.
 EOF
 }
 
@@ -52,6 +58,19 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -v|--verbose)
       NATIVE_REBUILD_VERBOSE=1
+      shift
+      ;;
+    --electron-version)
+      [[ $# -ge 2 ]] || {
+        echo "Error: --electron-version requires a value."
+        usage
+        exit 1
+      }
+      ELECTRON_VERSION_OVERRIDE="$2"
+      shift 2
+      ;;
+    --electron-version=*)
+      ELECTRON_VERSION_OVERRIDE="${1#*=}"
       shift
       ;;
     -h|--help)
@@ -122,7 +141,10 @@ PY
   # try the vendored x86_64 binary path when we can derive a package root.
   local package_root
   if package_root="$(cd "$(dirname "$resolved")/.." 2>/dev/null && pwd)"; then
-    candidates+=("$package_root/vendor/x86_64-apple-darwin/codex/codex")
+    candidates+=(
+      "$package_root/vendor/x86_64-apple-darwin/codex/codex"
+      "$package_root/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/codex/codex"
+    )
   fi
 
   local candidate
@@ -155,6 +177,82 @@ read_plist_key() {
   local plist_path="$1"
   local key="$2"
   /usr/libexec/PlistBuddy -c "Print :$key" "$plist_path" 2>/dev/null || true
+}
+
+validate_semver() {
+  local version="$1"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+resolve_electron_version_from_package_json() {
+  local package_json_path="$1"
+
+  python3 - "$package_json_path" "$DEFAULT_ELECTRON_VERSION" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+package_json_path = Path(sys.argv[1])
+default_version = sys.argv[2]
+
+try:
+    data = json.loads(package_json_path.read_text())
+except Exception:
+    print(default_version)
+    raise SystemExit(0)
+
+candidate = (
+    data.get("devDependencies", {}).get("electron")
+    or data.get("dependencies", {}).get("electron")
+    or default_version
+)
+
+match = re.search(r"(\d+\.\d+\.\d+)", str(candidate))
+print(match.group(1) if match else default_version)
+PY
+}
+
+resolve_effective_electron_version() {
+  local package_json_path="$1"
+
+  if [[ -n "$ELECTRON_VERSION_OVERRIDE" ]]; then
+    if ! validate_semver "$ELECTRON_VERSION_OVERRIDE"; then
+      echo "Error: invalid Electron version '$ELECTRON_VERSION_OVERRIDE'. Expected X.Y.Z."
+      exit 1
+    fi
+    printf '%s\n' "$ELECTRON_VERSION_OVERRIDE"
+    return 0
+  fi
+
+  resolve_electron_version_from_package_json "$package_json_path"
+}
+
+ensure_cxx20_toolchain() {
+  local check_output=""
+
+  if check_output="$(printf '#include <source_location>\n#include <compare>\nint main(){return 0;}\n' | clang++ -std=c++20 -x c++ - -c -o "$SESSION_DIR/cxx20-toolchain-check.o" 2>&1)"; then
+    rm -f "$SESSION_DIR/cxx20-toolchain-check.o"
+    return 0
+  fi
+
+  echo "Error: local Apple Command Line Tools are too old for Electron ${ELECTRON_VERSION} native module rebuilds."
+  echo "This machine is missing required C++20 standard library headers/features (for example <source_location>)."
+  echo
+  echo "Current toolchain:"
+  clang++ --version | head -n 1
+  if command -v xcrun >/dev/null 2>&1; then
+    echo "SDK version: $(xcrun --show-sdk-version 2>/dev/null || echo unknown)"
+  fi
+  echo
+  echo "Fix:"
+  echo "  1. Update Xcode Command Line Tools (or install a newer full Xcode)."
+  echo "  2. If full Xcode is installed, point xcode-select at it."
+  echo "  3. Re-run ./install.sh after the toolchain update."
+  echo
+  echo "Compiler probe output:"
+  echo "$check_output"
+  exit 1
 }
 
 force_remove_path() {
@@ -289,16 +387,23 @@ fi
 
 "$ASAR_CMD" extract "$WORK_APP_PATH/Contents/Resources/app.asar" "$ASAR_EXTRACT"
 
+ELECTRON_VERSION="$(resolve_effective_electron_version "$ASAR_EXTRACT/package.json")"
+ELECTRON_ZIP="electron-v${ELECTRON_VERSION}-darwin-x64.zip"
+ELECTRON_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/${ELECTRON_ZIP}"
+echo "Using Electron v${ELECTRON_VERSION} for rebuild and repackaging."
+
 # Patch main entry:
 # 1) avoid accidental dev-server loading in packaged mode
 # 2) guard markAppQuitting access
 # 3) force low-power window effects for Intel Macs (opaque windows, no liquid-glass)
 PATCH_LOG="$SESSION_DIR/patch-main.log"
-if ! python3 - <<PY 2>"$PATCH_LOG"
+if ! ASAR_EXTRACT="$ASAR_EXTRACT" python3 - <<'PY' 2>"$PATCH_LOG"
 from pathlib import Path
+import os
 import re
 
-build_dir = Path("$ASAR_EXTRACT/.vite/build")
+asar_extract = Path(os.environ["ASAR_EXTRACT"])
+build_dir = asar_extract / ".vite" / "build"
 def resolve_main_entry(build_path: Path) -> Path:
     markers = (
         "ELECTRON_RENDERER_URL",
@@ -346,150 +451,60 @@ def resolve_main_entry(build_path: Path) -> Path:
 target = resolve_main_entry(build_dir)
 
 text = target.read_text()
+applied = []
+optional_skips = []
 
-def patch_dev_server_guard(src: str) -> str:
-    fn = None
-    m = re.search(r'function (\\w+)\\(\\)\\{return process\\.env\\.ELECTRON_RENDERER_URL\\|\\|\\w+\\}', src)
-    if m:
-        fn = m.group(1)
-    patterns = []
-    if fn:
-        patterns.extend([fr'new URL\\({fn}\\(\\)\\)', fr'new URL\\({fn}\\)'])
-    patterns.extend([r'new URL\\(_B\\(\\)\\)', r'new URL\\(_B\\)'])
-    for pat in patterns:
-        m2 = re.search(pat, src)
-        if not m2:
-            continue
-        window_start = max(0, m2.start() - 400)
-        window_end = min(len(src), m2.end() + 400)
-        window = src[window_start:window_end]
-        guard_matches = list(re.finditer(r'!([A-Za-z_$][\\w$]*)\\.app\\.isPackaged', window))
-        if not guard_matches:
-            continue
-        mguard = guard_matches[-1]
-        var = mguard.group(1)
-        abs_idx = window_start + mguard.start()
-        needle = f'!{var}.app.isPackaged'
-        replacement = f'!{var}.app.isPackaged&&process.env.ELECTRON_RENDERER_URL'
-        if src[abs_idx:abs_idx+len(replacement)] == replacement:
-            return src
-        return src[:abs_idx] + replacement + src[abs_idx+len(needle):]
-    raise SystemExit("patch pattern1 not found in main entry")
-
-text = patch_dev_server_guard(text)
-
-pattern2a = r'if\\(yl\\)\\{([A-Za-z_$][\\w$]*)\\.markAppQuitting\\(\\);return\\}'
-m2 = re.search(pattern2a, text)
-if m2:
-    var = m2.group(1)
-    old = m2.group(0)
-    new = f'if(yl){{typeof {var}==\"undefined\"||{var}.markAppQuitting();return}}'
-    text = text.replace(old, new, 1)
-else:
-    print("patch pattern2a not found; skipping")
-
-pattern2b = r'yl=!0,([A-Za-z_$][\\w$]*)\\.markAppQuitting\\(\\)'
-m3 = re.search(pattern2b, text)
-if m3:
-    var = m3.group(1)
-    old = m3.group(0)
-    new = f'yl=!0,typeof {var}==\"undefined\"||{var}.markAppQuitting()'
-    text = text.replace(old, new, 1)
-else:
-    print("patch pattern2b not found; skipping")
-
-def patch_low_power_visual_effects(src: str) -> str:
-    updated = src
-
-    old_opaque = "isOpaqueWindowsEnabled(t){return this.options.getGlobalStateForHost(t).get(Wv.OPAQUE_WINDOWS)===!0}"
-    new_opaque = "isOpaqueWindowsEnabled(t){return!0}"
-    if old_opaque in updated:
-        updated = updated.replace(old_opaque, new_opaque, 1)
+def replace_once(pattern: str, replacement: str, label: str, required: bool = True) -> None:
+    global text
+    new_text, count = re.subn(pattern, replacement, text, count=1)
+    if count:
+        text = new_text
+        applied.append(label)
+    elif required:
+        raise SystemExit(f"required patch pattern not found for {label}")
     else:
-        updated = re.sub(
-            r"isOpaqueWindowsEnabled\([^)]*\)\{return[^}]+\}",
-            "isOpaqueWindowsEnabled(t){return!0}",
-            updated,
-            count=1,
-        )
+        optional_skips.append(label)
 
-    old_glass = (
-        'async getLiquidGlassSupport(){if(this.liquidGlassSupport!=null)return this.liquidGlassSupport;'
-        'if(process.platform!=="darwin")return this.liquidGlassSupport=!1,!1;try{const n='
-        '(await import("electron-liquid-glass")).default.isGlassSupported?.()??!1;'
-        'return this.liquidGlassSupport=n,this.liquidGlassSupport}catch{return this.liquidGlassSupport=!1,!1}}'
-    )
-    new_glass = "async getLiquidGlassSupport(){return this.liquidGlassSupport=!1,!1}"
-    if old_glass in updated:
-        updated = updated.replace(old_glass, new_glass, 1)
-    else:
-        updated = re.sub(
-            r'async getLiquidGlassSupport\(\)\{if\(this\.liquidGlassSupport!=null\)return this\.liquidGlassSupport;'
-            r'if\(process\.platform!=="darwin"\)return this\.liquidGlassSupport=!1,!1;try\{const [^}]+'
-            r'return this\.liquidGlassSupport=n,this\.liquidGlassSupport\}catch\{return this\.liquidGlassSupport=!1,!1\}\}',
-            new_glass,
-            updated,
-            count=1,
-        )
-
-    if updated == src:
-        print("low-power patch patterns not found; skipping")
-    return updated
-
-text = patch_low_power_visual_effects(text)
-
-def patch_app_server_analytics_default(src: str) -> str:
-    updated, count = re.subn(
-        r'args:\["app-server","--analytics-default-enabled"\]',
-        'args:["app-server"]',
-        src,
-    )
-    if count == 0:
-        print("app-server analytics patch pattern not found; skipping")
-    return updated
-
-text = patch_app_server_analytics_default(text)
+replace_once(
+    r"function Kh\(\)\{return process\.env\.ELECTRON_RENDERER_URL\|\|jh\}",
+    "function Kh(){return process.env.ELECTRON_RENDERER_URL||null}",
+    "renderer URL helper guard",
+)
+replace_once(
+    r"!([A-Za-z_$][\w$]*)\.app\.isPackaged\)\{let ([A-Za-z_$][\w$]*)=new URL\(Kh\(\)\);",
+    r"!\\1.app.isPackaged&&process.env.ELECTRON_RENDERER_URL){let \\2=new URL(Kh());",
+    "dev-server branch guard",
+)
+replace_once(
+    r"i\.markAppQuitting\(\)",
+    'typeof i?.markAppQuitting=="function"&&i.markAppQuitting()',
+    "markAppQuitting guard",
+)
+replace_once(
+    r"isOpaqueWindowsEnabled\([^)]*\)\{return[^}]+\}",
+    "isOpaqueWindowsEnabled(t){return!0}",
+    "opaque windows override",
+    required=False,
+)
+replace_once(
+    r'async getLiquidGlassSupport\(\)\{if\(this\.liquidGlassSupport!=null\)return this\.liquidGlassSupport;'
+    r'if\(process\.platform!=="darwin"\)return this\.liquidGlassSupport=!1,!1;try\{[^}]+\}catch\{return this\.liquidGlassSupport=!1,!1\}\}',
+    "async getLiquidGlassSupport(){return this.liquidGlassSupport=!1,!1}",
+    "liquid glass disable override",
+    required=False,
+)
+replace_once(
+    r"refreshWindowBackdropForHost\(e\)\{let t=this\.isOpaqueWindowsEnabled\(e\);",
+    "refreshWindowBackdropForHost(e){let t=!0;",
+    "opaque backdrop refresh override",
+    required=False,
+)
 
 target.write_text(text)
-print(f"patched {target}")
-
-assets_dir = Path("$ASAR_EXTRACT/webview/assets")
-index_candidates = sorted(assets_dir.glob("index-*.js"))
-if not index_candidates:
-    raise SystemExit(f"webview index bundle not found in {assets_dir}")
-
-index_target = index_candidates[0]
-renderer = index_target.read_text()
-original_renderer = renderer
-
-def patch_renderer_performance(src: str) -> str:
-    out = src
-
-    # Disable Shiki provider wrapper to reduce renderer CPU during streaming updates.
-    marker_start = out.find("function W8n(t){")
-    marker_end = out.find("function V8n()", marker_start)
-    if marker_start != -1 and marker_end != -1:
-        out = out[:marker_start] + "function W8n(t){const{children:e}=t;return e}" + out[marker_end:]
-
-    # Disable renderer Sentry init and selected non-essential hooks.
-    out = out.replace("I7n();", "", 1)
-    for old in (
-        "h.jsx(P7n,{})",  # telemetry user wiring
-        "h.jsx(B8n,{})",  # app-open/app-close analytics event
-        "h.jsx(d7n,{})",  # desktop notifications lifecycle
-        "h.jsx(t7n,{})",  # badge count updates
-        "h.jsx(b7n,{})",  # post-turn diff-comment extraction
-    ):
-        out = out.replace(old, "null", 1)
-
-    return out
-
-renderer = patch_renderer_performance(renderer)
-if renderer == original_renderer:
-    print("renderer performance patch patterns not found; skipping")
-else:
-    index_target.write_text(renderer)
-    print(f"patched {index_target}")
+message = f"patched main.js ({', '.join(applied)})"
+if optional_skips:
+    message += f"; skipped optional patches: {', '.join(optional_skips)}"
+print(message)
 PY
 then
   echo "Error: automatic patching failed for this Codex build."
@@ -522,8 +537,20 @@ mkdir -p "$REBUILD"
 cd "$REBUILD"
 unset npm_config_runtime npm_config_target npm_config_arch npm_config_disturl
 npm init -y >/dev/null
-npm i --no-save better-sqlite3@12.4.6 node-pty@1.1.0 node-gyp@12.2.0
+npm i --no-save better-sqlite3@12.4.6 node-pty@1.1.0 node-gyp@12.2.0 node-abi@3.77.0
 NODE_GYP="$REBUILD/node_modules/.bin/node-gyp"
+
+ELECTRON_ABI="$(node - "$ELECTRON_VERSION" <<'PY'
+const electronVersion = process.argv[2];
+const nodeAbi = require('./node_modules/node-abi');
+process.stdout.write(nodeAbi.getAbi(electronVersion, 'electron'));
+PY
+)"
+if [[ -z "$ELECTRON_ABI" ]]; then
+  echo "Error: unable to resolve ABI for Electron ${ELECTRON_VERSION}."
+  exit 1
+fi
+echo "Using Electron ABI ${ELECTRON_ABI}."
 
 # Set SDK flags when available; some setups need explicit SDK include paths.
 if command -v xcrun >/dev/null 2>&1; then
@@ -541,6 +568,9 @@ if command -v xcrun >/dev/null 2>&1; then
 else
   echo "Warning: xcrun not found; continuing without explicit SDK flags."
 fi
+
+ensure_cxx20_toolchain
+
 
 run_native_rebuild() {
   local module="$1"
@@ -589,7 +619,20 @@ run_native_rebuild "node-pty"
 # Inject rebuilt modules into asar extract
 mkdir -p "$ASAR_EXTRACT/node_modules/better-sqlite3/build/Release"
 mkdir -p "$ASAR_EXTRACT/node_modules/node-pty/build/Release"
-mkdir -p "$ASAR_EXTRACT/node_modules/node-pty/bin/darwin-x64-143"
+NODE_PTY_TARGET_DIR="$ASAR_EXTRACT/node_modules/node-pty/bin/darwin-x64-${ELECTRON_ABI}"
+NODE_PTY_SOURCE_DIR="$(find "$ASAR_EXTRACT/node_modules/node-pty/bin" -maxdepth 1 -type d -name 'darwin-*-*' | sort | head -n 1 || true)"
+if [[ -n "$NODE_PTY_SOURCE_DIR" ]]; then
+  NODE_PTY_SOURCE_BASENAME="$(basename "$NODE_PTY_SOURCE_DIR")"
+  case "$NODE_PTY_SOURCE_BASENAME" in
+    darwin-arm64-*)
+      NODE_PTY_TARGET_DIR="$ASAR_EXTRACT/node_modules/node-pty/bin/${NODE_PTY_SOURCE_BASENAME/darwin-arm64-/darwin-x64-}"
+      ;;
+    darwin-universal-*)
+      NODE_PTY_TARGET_DIR="$ASAR_EXTRACT/node_modules/node-pty/bin/${NODE_PTY_SOURCE_BASENAME/darwin-universal-/darwin-x64-}"
+      ;;
+  esac
+fi
+mkdir -p "$NODE_PTY_TARGET_DIR"
 
 cp "$REBUILD/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
    "$ASAR_EXTRACT/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
@@ -598,10 +641,10 @@ cp "$REBUILD/node_modules/node-pty/build/Release/pty.node" \
    "$ASAR_EXTRACT/node_modules/node-pty/build/Release/pty.node"
 
 cp "$REBUILD/node_modules/node-pty/build/Release/pty.node" \
-   "$ASAR_EXTRACT/node_modules/node-pty/bin/darwin-x64-143/node-pty.node"
+   "$NODE_PTY_TARGET_DIR/node-pty.node"
 
-# Disable sparkle
-truncate -s 0 "$ASAR_EXTRACT/native/sparkle.node" || true
+# Disable sparkle (skipping)
+# [[ -f "$ASAR_EXTRACT/native/sparkle.node" ]] && true > "$ASAR_EXTRACT/native/sparkle.node" || true
 
 # Pack asar (unpack native .node files)
 cd "$ROOT"
@@ -629,7 +672,9 @@ CODEX_CMD="$(type -P codex 2>/dev/null || true)"
 if [[ -n "$CODEX_CMD" && -x "$CODEX_CMD" ]]; then
   # Resolve to a concrete x86_64 binary when PATH points to a launcher script.
   if CODEX_BIN="$(resolve_x64_codex_cli "$CODEX_CMD")"; then
-    if ! install -m 755 "$CODEX_BIN" "$OUT_APP_PATH/Contents/Resources/codex"; then
+    mkdir -p "$OUT_APP_PATH/Contents/Resources/bin"
+    if ! install -m 755 "$CODEX_BIN" "$OUT_APP_PATH/Contents/Resources/codex" || \
+       ! install -m 755 "$CODEX_BIN" "$OUT_APP_PATH/Contents/Resources/bin/codex"; then
       echo "Warning: failed to copy x86_64 Codex CLI into app bundle from $CODEX_BIN (continuing)."
     fi
   else
